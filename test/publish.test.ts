@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync }
   from "node:fs";
 import { resolve } from "node:path";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { publicPass } from "../src/dashboard/publish.js";
 import { speedStats } from "../src/dashboard/aggregate.js";
@@ -208,5 +209,46 @@ describe.skipIf(!exported)("a real export", () => {
 
   it("does not publish source maps", () => {
     expect(files.filter((file) => file.name.endsWith(".map"))).toHaveLength(0);
+  });
+});
+
+/**
+ * The deployment config is per-deployment, like `config.json`.
+ *
+ * `wrangler.jsonc` names a Worker and a hostname belonging to whoever set it up, so it is gitignored
+ * and only the template is committed. This checks the template is still a template - it is the sort
+ * of file that gets edited to test something and then accidentally committed.
+ */
+describe("the wrangler template", () => {
+  const raw = readFileSync(resolve(ROOT, "wrangler.example.jsonc"), "utf8");
+
+  // JSONC: drop whole-line comments, which is how every comment in this file is written.
+  const config = JSON.parse(raw.split("\n").filter((line) => !line.trim().startsWith("//")).join("\n")) as
+    { name: string; main?: string; assets: { directory: string }; secrets: { required: string[] };
+      routes: { pattern: string }[] };
+
+  it("carries placeholders rather than somebody's deployment", () => {
+    expect(config.name).toBe("REPLACE_WITH_WORKER_NAME");
+    expect(config.routes[0]?.pattern).toBe("REPLACE_WITH_HOSTNAME");
+  });
+
+  it("names no real host anywhere, comments included", () => {
+    // Deliberately a shape rather than a name: writing the real hostname here to assert its absence
+    // would put it back in a committed file, which is the thing being prevented.
+    expect(raw).not.toMatch(/\b[a-z0-9-]+\.(ca|com|net|org)\b/);
+  });
+
+  it("still describes the deployment the exporter builds for", () => {
+    // If these drift, `publish` writes to one place and `wrangler deploy` uploads from another.
+    expect(config.assets.directory).toBe("./public");
+    expect(config.main).toBeUndefined();
+    expect(config.secrets.required).toEqual([]);
+  });
+
+  it("is the only wrangler config that is committed", () => {
+    const tracked = execFileSync("git", [ "ls-files" ], { cwd: ROOT, encoding: "utf8" }).split("\n");
+
+    expect(tracked).toContain("wrangler.example.jsonc");
+    expect(tracked).not.toContain("wrangler.jsonc");
   });
 });

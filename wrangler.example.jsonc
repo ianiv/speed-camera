@@ -1,0 +1,34 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+
+  // Copy this to wrangler.jsonc and put your own name and hostname in it. wrangler.jsonc is
+  // gitignored, the way config.json is, because it names one particular deployment.
+  //
+  // An assets-only Worker: no "main", so there is no code to run. Cloudflare serves the files in
+  // ./public directly from its edge. Nothing here can reach the camera, the controller, or the
+  // database - the whole site is a snapshot built at home by `ufp-speed publish`.
+  "name": "REPLACE_WITH_WORKER_NAME",
+  "compatibility_date": "2026-09-08",
+
+  "assets": {
+    "directory": "./public"
+  },
+
+  // This Worker needs no secrets, and saying so explicitly stops Wrangler loading the controller
+  // credentials out of .env into its own process during `wrangler dev`. Nothing is uploaded either
+  // way - `wrangler deploy --dry-run` reports no bindings - but the credentials have no business
+  // being anywhere near this command.
+  "secrets": {
+    "required": []
+  },
+
+  // A Custom Domain rather than a route, so Cloudflare manages the DNS record and the certificate.
+  // The domain must already be a zone on the same Cloudflare account. Delete this block to deploy
+  // to a *.workers.dev subdomain instead.
+  "routes": [
+    {
+      "pattern": "REPLACE_WITH_HOSTNAME",
+      "custom_domain": true
+    }
+  ]
+}

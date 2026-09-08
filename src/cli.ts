@@ -12,7 +12,7 @@ import { Store } from "./db.js";
 import { crossCheckSamples, isVehicle, listVehicleEvents, resolveWindow } from "./events.js";
 import { pointInPolygon } from "./homography.js";
 import { analyzeVideo } from "./worker.js";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -755,6 +755,13 @@ async function stopDashboard(): Promise<number> {
 /** Hand the built directory to Wrangler. Everything about where it goes lives in wrangler.jsonc. */
 async function deploySite(): Promise<void> {
   const wrangler = resolve(ROOT, "node_modules", ".bin", "wrangler");
+  const config = resolve(ROOT, "wrangler.jsonc");
+
+  // Not committed, for the same reason config.json is not: it names one particular deployment.
+  if(!existsSync(config)) {
+    throw new Error("No wrangler.jsonc at " + config + ". Copy wrangler.example.jsonc to " +
+      "wrangler.jsonc and set the Worker name and the hostname to deploy to.");
+  }
 
   await new Promise<void>((resolveDeploy, reject) => {
     spawn(wrangler, [ "deploy" ], { cwd: ROOT, stdio: "inherit" })

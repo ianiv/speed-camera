@@ -28,16 +28,26 @@ a `/protect/events/` link or an `/api/clip` route appears in the published data.
 
 ## One-time Cloudflare setup
 
-`example.com` must already be a zone on the Cloudflare account; the Custom Domain in
-`wrangler.jsonc` cannot be created otherwise.
+`wrangler.jsonc` names one particular deployment, so it is gitignored the way `config.json` is.
+Start from the template:
+
+```sh
+cp wrangler.example.jsonc wrangler.jsonc
+```
+
+Then set `name` to the Worker name and `routes[0].pattern` to the hostname to serve from. That
+hostname's domain must already be a zone on the Cloudflare account, or the Custom Domain cannot be
+created - delete the `routes` block to deploy to a `*.workers.dev` subdomain instead.
 
 ```sh
 npx wrangler login     # interactive - opens a browser
 npx wrangler whoami    # confirms the account
-npx wrangler deploy    # creates the Worker and the traffic.example.com record
+npx wrangler deploy    # creates the Worker and its DNS record
 ```
 
 The first deploy creates the DNS record and the certificate, which takes a minute or two to go live.
+A brand-new hostname can also be held up by whatever resolver you are behind having cached the empty
+answer from before it existed; that clears itself within the zone's negative-cache TTL.
 
 There is no Worker code - `wrangler.jsonc` has an `assets` directory and no `main` - so Cloudflare
 serves the files straight from its edge. `secrets.required` is set to the empty list so that
