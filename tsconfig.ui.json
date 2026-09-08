@@ -5,9 +5,9 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "rootDir": "src/dashboard",
-    "outDir": "dist/dashboard",
+    "outDir": "dist/web",
     "types": []
   },
-  "include": ["src/dashboard/ui/**/*.ts", "src/dashboard/types.ts"],
+  "include": ["src/dashboard/ui/**/*.ts", "src/dashboard/types.ts", "src/dashboard/aggregate.ts"],
   "exclude": ["dist", "node_modules"]
 }

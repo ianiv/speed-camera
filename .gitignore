@@ -9,3 +9,7 @@ py/*.pt
 *.pt
 *.tsbuildinfo
 .DS_Store
+
+# The generated public dashboard, and Wrangler's local state. Both are rebuilt by `ufp-speed publish`.
+public/
+.wrangler/

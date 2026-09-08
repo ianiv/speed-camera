@@ -11,9 +11,10 @@
     "ufp-speed": "./dist/cli.js"
   },
   "scripts": {
-    "build": "tsc && tsc -p tsconfig.ui.json && mkdir -p dist/calibrate dist/dashboard/ui && cp src/calibrate/page.html dist/calibrate/ && cp src/dashboard/page.html dist/dashboard/ && cp src/dashboard/ui/style.css dist/dashboard/ui/",
+    "build": "tsc && tsc -p tsconfig.ui.json && mkdir -p dist/calibrate dist/web/ui && cp src/calibrate/page.html dist/calibrate/ && cp src/dashboard/page.html dist/dashboard/ && cp src/dashboard/ui/style.css dist/web/ui/",
     "dev": "tsx src/cli.ts",
     "ufp-speed": "tsx src/cli.ts",
+    "publish:site": "tsx src/cli.ts publish --deploy",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json --noEmit"
   },
@@ -27,10 +28,13 @@
     "@types/node": "^24.5.2",
     "tsx": "^4.20.6",
     "typescript": "^5.9.2",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "wrangler": "^4.130.0"
   },
   "allowScripts": {
     "better-sqlite3@12.11.1": true,
-    "esbuild@0.28.2": true
+    "esbuild@0.28.2": true,
+    "esbuild@0.28.1": true,
+    "workerd@1.20260908.1": true
   }
 }

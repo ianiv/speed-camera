@@ -3,7 +3,9 @@ import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { createProjector, loadCalibration } from "./calibration.js";
 import { runCalibrationServer } from "./calibrate/server.js";
-import { runDashboardServer } from "./dashboard/server.js";
+import { PID_NAME, PID_SEARCH, runDashboardServer } from "./dashboard/server.js";
+import { livePid, stop } from "./pidfile.js";
+import { exportSite } from "./dashboard/publish.js";
 import { loadConfig, ROOT } from "./config.js";
 import type { Config } from "./config.js";
 import { Store } from "./db.js";
@@ -39,7 +41,10 @@ ufp-speed - estimate vehicle speeds from UniFi Protect motion events
   list [--since <t>] [--min-kph <n>] [--rejected] [--csv]
                                Show measurements
   stats                        Counts and rejection breakdown
-  dashboard [--port <n>]       Serve the speed dashboard on 127.0.0.1
+  dashboard [--port <n>] [--stop]
+                               Serve the speed dashboard on 127.0.0.1, or stop the running one
+  publish [--out <dir>] [--deploy] [--every <interval>]
+                               Build a public copy of the dashboard, without playback
 
 Options: --debug for verbose logging. Credentials come from .env.
 `.trim();
@@ -66,6 +71,7 @@ async function main(): Promise<number> {
     case "list": return list(argv);
     case "stats": return stats();
     case "dashboard": return dashboard(argv);
+    case "publish": return publish(argv);
     default:
       log.error("Unknown command: " + command + "\n\n" + USAGE);
 
@@ -73,15 +79,16 @@ async function main(): Promise<number> {
   }
 }
 
+const UNIT_MS = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1000, w: 604_800_000 };
+
+const RELATIVE = /^(\d+(?:\.\d+)?)\s*([smhdw])$/i;
+
 /** Parse "3h" / "2d" / "45m" as an offset from now, or anything Date understands as absolute. */
 function parseTime(value: string): number {
-  const relative = /^(\d+(?:\.\d+)?)\s*([smhdw])$/i.exec(value.trim());
+  const relative = RELATIVE.exec(value.trim());
 
   if(relative) {
-    const unit = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1000, w: 604_800_000 }[
-      (relative[2] as string).toLowerCase() as "s" | "m" | "h" | "d" | "w" ];
-
-    return Date.now() - (Number(relative[1]) * unit);
+    return Date.now() - (Number(relative[1]) * unitMs(relative[2] as string));
   }
 
   const parsed = Date.parse(value);
@@ -91,6 +98,21 @@ function parseTime(value: string): number {
   }
 
   return parsed;
+}
+
+function unitMs(suffix: string): number {
+  return UNIT_MS[suffix.toLowerCase() as keyof typeof UNIT_MS];
+}
+
+/** Parse "15m" / "2h" as a length of time. Same units as `parseTime`, but a duration, not an instant. */
+function parseInterval(value: string): number {
+  const match = RELATIVE.exec(value.trim());
+
+  if(!match) {
+    throw new Error('Cannot parse interval "' + value + '". Use a length like 15m or 2h.');
+  }
+
+  return Number(match[1]) * unitMs(match[2] as string);
 }
 
 type FlagValues = Record<string, string | boolean | undefined>;
@@ -687,12 +709,106 @@ async function stats(): Promise<number> {
  * the controller. So it is safe to leave running beside them.
  */
 async function dashboard(argv: string[]): Promise<number> {
-  const opts = flags(argv, { port: { type: "string" } });
+  const opts = flags(argv, { port: { type: "string" }, stop: { type: "boolean" } });
+
+  if(opts.stop) {
+    return await stopDashboard();
+  }
+
   const cfg = loadConfig();
+  const running = livePid(PID_NAME);
+
+  // Without this the only symptom is EADDRINUSE, which says a port is taken but not that the thing
+  // taking it is another copy of this command.
+  if(running) {
+    log.error("The dashboard is already running on port " + running.port + " (pid " + running.pid +
+      "). Stop it with `ufp-speed dashboard --stop`.");
+
+    return 1;
+  }
 
   await runDashboardServer(cfg, Number((opts.port as string | undefined) ?? cfg.dashboard.port));
 
   return 0;
+}
+
+/** Stop the running dashboard, and say plainly what was stopped and how it was found. */
+async function stopDashboard(): Promise<number> {
+  const result = await stop(PID_NAME, PID_SEARCH);
+
+  if(result.outcome === "not-running") {
+    log.info("No dashboard is running.");
+
+    return 0;
+  }
+
+  const where = result.port === undefined ? "" : " on port " + result.port;
+  const how = result.bySearch ? " (found by searching - it was started without a pid file)" : "";
+
+  log.info((result.outcome === "forced"
+    ? "Dashboard did not stop in time and was killed"
+    : "Stopped the dashboard") + where + " - pid " + result.pids.join(", ") + how + ".");
+
+  return 0;
+}
+
+/** Hand the built directory to Wrangler. Everything about where it goes lives in wrangler.jsonc. */
+async function deploySite(): Promise<void> {
+  const wrangler = resolve(ROOT, "node_modules", ".bin", "wrangler");
+
+  await new Promise<void>((resolveDeploy, reject) => {
+    spawn(wrangler, [ "deploy" ], { cwd: ROOT, stdio: "inherit" })
+      .on("error", reject)
+      .on("close", (code) => code === 0 ? resolveDeploy()
+        : reject(new Error("wrangler deploy exited " + code)));
+  });
+}
+
+/**
+ * Build - and optionally upload - a public copy of the dashboard.
+ *
+ * Read-only against the database, like `dashboard`, so it is safe to run beside the daemon. With
+ * `--every` it stays up and repeats, which is how the published page keeps up with the street; a
+ * failed upload is logged and retried on the next tick rather than ending the loop, because the
+ * usual cause is a laptop that was briefly off the network.
+ */
+async function publish(argv: string[]): Promise<number> {
+  const opts = flags(argv,
+    { deploy: { type: "boolean" }, every: { type: "string" }, out: { type: "string" } });
+
+  const cfg = loadConfig();
+  const outDir = resolve(ROOT, (opts.out as string | undefined) ?? "public");
+  const everyMs = opts.every === undefined ? undefined : parseInterval(opts.every as string);
+  const store = new Store();
+
+  try {
+    for(;;) {
+      try {
+        const built = exportSite(store, cfg, outDir);
+
+        log.info("Exported " + built.files + " files, " +
+          Math.round(built.bytes / 1024) + " KB, " + built.passes + " passes -> " + built.dir);
+
+        if(opts.deploy) {
+          await deploySite();
+        }
+      } catch(error) {
+        if(everyMs === undefined) {
+          throw error;
+        }
+
+        log.error("Publish failed, will retry: " + (error as Error).message);
+      }
+
+      if(everyMs === undefined) {
+        return 0;
+      }
+
+      await new Promise((sleep) => setTimeout(sleep, everyMs));
+    }
+  } finally {
+    store.close();
+  }
 }
 
 main().then((code) => process.exit(code), (error) => {

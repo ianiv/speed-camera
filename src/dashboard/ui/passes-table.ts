@@ -9,6 +9,10 @@ export interface PassesData {
   direction: SortDirection;
   /** Passes in range before the page limit, so the table can say when it is showing a subset. */
   total: number;
+  /** Whether footage is reachable from here. False drops the last column entirely. */
+  playback: boolean;
+  /** The street's timezone, when the reader may not be in it. Undefined means use the browser's. */
+  timeZone: string | undefined;
 }
 
 export interface SortChange {
@@ -153,6 +157,15 @@ export class PassesTable extends Panel<PassesData> {
   /** A player opened by this render, to be scrolled into view once it exists in the DOM. */
   #justOpened: string | null = null;
 
+  /**
+   * The ordering the table was last drawn in.
+   *
+   * Rebuilding the markup drops the scroll box's position, so it is carried across a redraw by hand.
+   * Carrying it across a *re-sort* would be wrong, though: the rows under you are then different
+   * rows, so the only place that still means anything is the top.
+   */
+  #order: string | null = null;
+
   constructor() {
     super(CSS);
   }
@@ -189,14 +202,25 @@ export class PassesTable extends Panel<PassesData> {
   #draw(data: PassesData): void {
     this.#deferred = null;
 
-    const { direction: sortDir, directionLabels, passes, sort, speedLimitKph, total } = data;
+    const { direction: sortDir, directionLabels, passes, playback, sort, speedLimitKph, timeZone,
+      total } = data;
+
+    // The published copy has no last column, and the player row that spans the table has to know.
+    const columns = playback ? 8 : 7;
 
     const order = sort === "speed"
       ? (sortDir === "desc" ? "Fastest first" : "Slowest first")
       : (sortDir === "desc" ? "Newest first" : "Oldest first");
 
     const heading = "<h2>Individual passes</h2><p class=\"hint\">" + order +
-      " - click Time or km/h to re-sort. Play the footage in place, or open the event in Protect.</p>";
+      " - click Time or km/h to re-sort." +
+      (data.playback ? " Play the footage in place, or open the event in Protect." : "") + "</p>";
+
+    // Read before the markup goes: a background poll must leave the viewer where they were reading.
+    const ordering = sort + ":" + sortDir;
+    const keep = (ordering === this.#order) ? this.root.querySelector(".scroll")?.scrollTop ?? 0 : 0;
+
+    this.#order = ordering;
 
     if(!passes.length) {
       this.root.innerHTML = heading + "<div class=\"empty\">No measured passes in this range.</div>";
@@ -204,14 +228,25 @@ export class PassesTable extends Panel<PassesData> {
       return;
     }
 
+    // Built once rather than per row, and pinned to the street's timezone when the reader may not
+    // be standing in it - a published page read from another country should still say when the
+    // traffic went past the camera, not what the reader's clock said at that moment.
+    const clock = new Intl.DateTimeFormat([], timeZone === undefined
+      ? { hour: "2-digit", minute: "2-digit", second: "2-digit" }
+      : { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone });
+
+    const day = new Intl.DateTimeFormat([], timeZone === undefined
+      ? { day: "numeric", month: "short" }
+      : { day: "numeric", month: "short", timeZone });
+
     const rows = passes.map((pass) => {
       const when = new Date(pass.atMs);
       const heading180 = ((pass.directionDeg % 360) + 540) % 360 - 180;
       const direction = Math.abs(heading180) <= 90 ? directionLabels[0] : directionLabels[1];
       const over = pass.speedKph > speedLimitKph;
 
-      return "<tr><td>" + when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) +
-        "<span class=\"meta\"> " + when.toLocaleDateString([], { day: "numeric", month: "short" }) + "</span></td>" +
+      return "<tr><td>" + clock.format(when) +
+        "<span class=\"meta\"> " + day.format(when) + "</span></td>" +
         "<td>" + escapeHtml(pass.cls) +
         (pass.mergedFrom > 1 ? "<span class=\"merged\" title=\"Measured " + pass.mergedFrom +
           " times from overlapping Protect events; the best-quality reading is shown.\">&times;" +
@@ -221,11 +256,8 @@ export class PassesTable extends Panel<PassesData> {
         "<td class=\"meta\">" + pass.distanceM.toFixed(1) + " m</td>" +
         "<td class=\"meta\">" + pass.nPoints + "</td>" +
         "<td class=\"meta\">" + pass.quality.toFixed(2) + "</td>" +
-        "<td><button type=\"button\" class=\"play\" data-pass=\"" + escapeHtml(PassesTable.#key(pass)) +
-        "\" aria-expanded=\"" + this.#open.has(PassesTable.#key(pass)) + "\">Play</button> " +
-        "<a href=\"" + escapeHtml(pass.protectUrl) + "\" target=\"_blank\" rel=\"noreferrer\">" +
-        "Protect</a></td></tr>" +
-        (this.#open.has(PassesTable.#key(pass)) ? this.#playerRow(pass) : "");
+        (playback ? this.#actionsCell(pass) : "") + "</tr>" +
+        (playback && this.#open.has(PassesTable.#key(pass)) ? this.#playerRow(pass, columns) : "");
     }).join("");
 
     // Only the page of rows the server sent is on screen, so say so when there are more - otherwise
@@ -243,7 +275,14 @@ export class PassesTable extends Panel<PassesData> {
       "<th title=\"Ground distance the fit was measured over\">Tracked</th>" +
       "<th title=\"Frames used in the fit\">Frames</th>" +
       "<th title=\"Composite of fit quality, sample count and frame timing\">Quality</th>" +
-      "<th></th></tr></thead><tbody>" + rows + "</tbody></table></div>" + truncated;
+      (playback ? "<th></th>" : "") + "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
+      truncated;
+
+    if(keep) {
+      // Instant, not the smooth scrolling this box uses for opening a player: a refresh should look
+      // like nothing happened, and an animation back to where you already were is the opposite.
+      this.root.querySelector(".scroll")?.scrollTo({ behavior: "instant", top: keep });
+    }
 
     for(const th of this.root.querySelectorAll("th.sortable")) {
       th.addEventListener("click", () => {
@@ -275,11 +314,19 @@ export class PassesTable extends Panel<PassesData> {
     }
   }
 
-  #playerRow(pass: Pass): string {
+  /** The Play button and the way out to Protect. Only ever rendered where both can work. */
+  #actionsCell(pass: Pass): string {
+    return "<td><button type=\"button\" class=\"play\" data-pass=\"" + escapeHtml(PassesTable.#key(pass)) +
+      "\" aria-expanded=\"" + this.#open.has(PassesTable.#key(pass)) + "\">Play</button> " +
+      (pass.protectUrl === undefined ? "" : "<a href=\"" + escapeHtml(pass.protectUrl) +
+        "\" target=\"_blank\" rel=\"noreferrer\">Protect</a>") + "</td>";
+  }
+
+  #playerRow(pass: Pass, columns: number): string {
     // The clip is the whole event, so two vehicles measured in one clip play the same footage - each
     // from its own row, which is where the speed it belongs to is written.
     return "<tr class=\"player\" data-player=\"" + escapeHtml(PassesTable.#key(pass)) +
-      "\"><td colspan=\"8\">" +
+      "\"><td colspan=\"" + columns + "\">" +
       "<video controls preload=\"metadata\" playsinline " +
       "src=\"/api/clip/" + encodeURIComponent(pass.eventId) + "?codec=" + hevcCodec() + "\"></video>" +
       "<div class=\"clip-note\">Fetching the clip from Protect&hellip;</div></td></tr>";

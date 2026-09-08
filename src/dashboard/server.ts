@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { dirname, extname, resolve } from "node:path";
+import { dirname, extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { byDirection, byHourOfDay, BIN_WIDTH_KPH, histogram, sortPasses, speedStats } from "./aggregate.js";
 import { clipFor, parseByteRange } from "./clips.js";
@@ -15,6 +15,7 @@ import type { CandidatePass } from "../dedupe.js";
 import { ROOT } from "../config.js";
 import type { Config } from "../config.js";
 import { Store } from "../db.js";
+import { claim } from "../pidfile.js";
 import type { PassRow } from "../db.js";
 import { PASS_SORTS, RANGES } from "./types.js";
 import type { PassesResponse, PassSort, RangeKey, SortDirection, Summary } from "./types.js";
@@ -22,9 +23,16 @@ import { log } from "../log.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/** Where compiled browser modules land. Kept beside the server in dist, built from src/dashboard/ui. */
+/**
+ * The browser bundle: sources in, compiled tree out.
+ *
+ * `dist/web` is its own root rather than a corner of `dist/dashboard`, because the Node build writes
+ * there too - and both configs compile `types.ts` and `aggregate.ts`. Sharing a directory means two
+ * compilers racing to write the same file. Keeping them apart also makes this tree exactly what gets
+ * published, so a URL that works locally works on the public site.
+ */
 const UI_SRC = resolve(ROOT, "src", "dashboard", "ui");
-const UI_OUT = resolve(ROOT, "dist", "dashboard", "ui");
+export const UI_OUT = resolve(ROOT, "dist", "web");
 
 const RANGE_MS: Record<Exclude<RangeKey, "all">, number> = {
   "1h": 3_600_000,
@@ -78,8 +86,8 @@ export function ensureUiBuilt(): void {
 
   // tsc only emits JavaScript, so the stylesheet has to come across separately. Copying it into the
   // same directory keeps the server with a single, simple asset root.
-  mkdirSync(UI_OUT, { recursive: true });
-  copyFileSync(resolve(UI_SRC, "style.css"), resolve(UI_OUT, "style.css"));
+  mkdirSync(resolve(UI_OUT, "ui"), { recursive: true });
+  copyFileSync(resolve(UI_SRC, "style.css"), resolve(UI_OUT, "ui", "style.css"));
 }
 
 function rangeStart(range: RangeKey): number | undefined {
@@ -121,8 +129,15 @@ function parseRange(value: string | null): RangeKey {
   return RANGES.includes(value as RangeKey) ? value as RangeKey : "24h";
 }
 
+/** One range's passes, plus the counts the coverage line needs. */
+export interface Collected {
+  passes: ReturnType<typeof dedupePasses>;
+  rawCount: number;
+  events: number;
+}
+
 export function collectPasses(store: Store, cfg: Config, range: RangeKey, dedupe: boolean):
-  { passes: ReturnType<typeof dedupePasses>; rawCount: number; events: number } {
+  Collected {
 
   const sinceMs = rangeStart(range);
   const rows = store.passRows(sinceMs === undefined ? {} : { sinceMs });
@@ -134,8 +149,16 @@ export function collectPasses(store: Store, cfg: Config, range: RangeKey, dedupe
   return { events: store.eventCount(sinceMs), passes, rawCount: candidates.length };
 }
 
-function summary(store: Store, cfg: Config, range: RangeKey, dedupe: boolean): Summary {
-  const { events, passes, rawCount } = collectPasses(store, cfg, range, dedupe);
+/**
+ * The `/api/summary` payload, from an already-collected range.
+ *
+ * It takes the collection rather than doing it, so a caller that needs both payloads for one range -
+ * the static exporter does - reads SQLite and dedupes once instead of twice.
+ */
+export function buildSummary(cfg: Config, range: RangeKey, dedupe: boolean,
+  collected: Collected): Summary {
+
+  const { events, passes, rawCount } = collected;
 
   return {
     binWidthKph: BIN_WIDTH_KPH,
@@ -148,6 +171,23 @@ function summary(store: Store, cfg: Config, range: RangeKey, dedupe: boolean): S
     range,
     speedLimitKph: cfg.speedLimitKph,
     stats: speedStats(passes, cfg.speedLimitKph)
+  };
+}
+
+/** The `/api/passes` payload. `playback` tells the table whether footage is reachable from here. */
+export function buildPasses(cfg: Config, range: RangeKey, dedupe: boolean, collected: Collected,
+  sort: PassSort, direction: SortDirection, limit: number, playback: boolean): PassesResponse {
+
+  return {
+    dedupe,
+    direction,
+    directionLabels: cfg.dashboard.directionLabels,
+    passes: sortPasses(collected.passes, sort, direction).slice(0, Math.max(1, limit)),
+    playback,
+    range,
+    sort,
+    speedLimitKph: cfg.speedLimitKph,
+    total: collected.passes.length
   };
 }
 
@@ -209,6 +249,17 @@ interface ClipDeps {
   protect: () => Promise<Protect>;
 }
 
+/** The name this server records itself under, so `dashboard --stop` can find it again. */
+export const PID_NAME = "dashboard";
+
+/**
+ * Matches this project's dashboard however it was started - `tsx src/cli.ts` or `node dist/cli.js`.
+ *
+ * Only used when there is no pid file to go on, so it is anchored on the entry point rather than on
+ * the word "dashboard", which would match far too much on a developer's machine.
+ */
+export const PID_SEARCH = "cli\\.(ts|js) dashboard";
+
 /**
  * Serve the dashboard until interrupted.
  *
@@ -254,8 +305,10 @@ export function runDashboardServer(cfg: Config, port: number): Promise<void> {
         }
 
         if(path === "/api/summary") {
-          json(summary(store, cfg, parseRange(url.searchParams.get("range")),
-            url.searchParams.get("dedupe") !== "0"));
+          const range = parseRange(url.searchParams.get("range"));
+          const dedupe = url.searchParams.get("dedupe") !== "0";
+
+          json(buildSummary(cfg, range, dedupe, collectPasses(store, cfg, range, dedupe)));
 
           return;
         }
@@ -268,20 +321,9 @@ export function runDashboardServer(cfg: Config, port: number): Promise<void> {
           const sort: PassSort = PASS_SORTS.includes(sortParam as PassSort)
             ? sortParam as PassSort : "time";
           const direction: SortDirection = url.searchParams.get("dir") === "asc" ? "asc" : "desc";
-          const all = collectPasses(store, cfg, range, dedupe).passes;
 
-          const body: PassesResponse = {
-            dedupe,
-            direction,
-            directionLabels: cfg.dashboard.directionLabels,
-            passes: sortPasses(all, sort, direction).slice(0, Math.max(1, limit)),
-            range,
-            sort,
-            speedLimitKph: cfg.speedLimitKph,
-            total: all.length
-          };
-
-          json(body);
+          json(buildPasses(cfg, range, dedupe, collectPasses(store, cfg, range, dedupe),
+            sort, direction, limit, true));
 
           return;
         }
@@ -303,12 +345,13 @@ export function runDashboardServer(cfg: Config, port: number): Promise<void> {
           return;
         }
 
-        // Static UI assets. The path is rebuilt from its basename rather than joined, so a
-        // traversal attempt resolves to a name that simply is not there.
-        const asset = resolve(UI_OUT, path.replace(/^\/+/, "").split("/").pop() ?? "");
+        // Static UI assets, served at the same paths the published site uses so the two cannot
+        // drift. `resolve` collapses any ".." before the guard below sees it, so a traversal ends up
+        // outside UI_OUT and is refused rather than followed.
+        const asset = resolve(UI_OUT, path.replace(/^\/+/, ""));
         const type = MIME[extname(asset)];
 
-        if(type && asset.startsWith(UI_OUT) && existsSync(asset)) {
+        if(type && asset.startsWith(UI_OUT + sep) && existsSync(asset)) {
           res.writeHead(200, { "cache-control": "no-store", "content-type": type });
           res.end(readFileSync(asset));
 
@@ -323,13 +366,26 @@ export function runDashboardServer(cfg: Config, port: number): Promise<void> {
       }
     });
 
+    let release: (() => void) | undefined;
+
     server.on("error", (error) => {
+      release?.();
       store.close();
       reject(error);
     });
 
     server.listen(port, "127.0.0.1", () => {
-      log.info("Dashboard: http://127.0.0.1:" + port + "  (Ctrl-C to stop)");
+      // Claimed only once the port is actually bound. Writing it before would leave a pid file
+      // describing a process that is about to exit because the port was taken.
+      release = claim(PID_NAME, port, () => {
+        log.info("Stopping the dashboard.");
+        server.close();
+        store.close();
+        process.exit(0);
+      });
+
+      log.info("Dashboard: http://127.0.0.1:" + port +
+        "  (Ctrl-C, or `ufp-speed dashboard --stop`)");
     });
   });
 }

@@ -26,7 +26,11 @@ export interface Pass {
   r2: number;
   quality: number;
   nPoints: number;
-  protectUrl: string;
+  /**
+   * Deep link to the event in Protect. Absent on the published site: it embeds the controller's
+   * address, which is the one piece of this data that must not leave the house.
+   */
+  protectUrl?: string;
   /** Raw measurements merged into this pass. 1 means nothing was merged. */
   mergedFrom: number;
 }
@@ -54,7 +58,7 @@ export interface HistogramBin {
 }
 
 export interface HourBucket {
-  /** Hour of day, 0-23, in the server's local time. */
+  /** Hour of day, 0-23, in the timezone the summary was generated in - see `Summary.timeZone`. */
   hour: number;
   n: number;
   meanKph: number;
@@ -85,14 +89,23 @@ export interface Summary {
   byHour: HourBucket[];
   byDirection: [DirectionSplit, DirectionSplit];
   coverage: Coverage;
+  /**
+   * IANA zone the hour buckets and pass times were computed in.
+   *
+   * Only set on a published snapshot, where the reader may be in a different timezone from the
+   * street. Without it a page about a Toronto street read from Berlin would put the morning rush at
+   * two in the afternoon.
+   */
+  timeZone?: string;
 }
 
 /**
  * How the passes table is ordered.
  *
- * Applied on the server, not in the browser, because the table fetches only a page of rows: sorting
- * a truncated newest-first page by speed would put the fastest of the recent few at the top and
- * call them the fastest, which is worse than not offering the sort at all.
+ * On the live dashboard this is applied on the server, because the table fetches only a page of
+ * rows: sorting a truncated newest-first page by speed would put the fastest of the recent few at
+ * the top and call them the fastest, which is worse than not offering the sort at all. A published
+ * snapshot carries every row in the range instead, and sorts in the browser with the same function.
  */
 export type PassSort = "time" | "speed";
 export type SortDirection = "asc" | "desc";
@@ -109,4 +122,11 @@ export interface PassesResponse {
   /** Passes matching the range, before the page limit was applied. */
   total: number;
   passes: Pass[];
+  /**
+   * Whether footage can be reached from wherever this page is served.
+   *
+   * False on the published site, which has no route to the controller - so the table offers neither
+   * the inline player nor the link into Protect rather than showing controls that cannot work.
+   */
+  playback: boolean;
 }

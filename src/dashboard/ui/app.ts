@@ -10,9 +10,8 @@ import type { HistogramData } from "./speed-histogram.js";
 import type { TilesData } from "./stat-tiles.js";
 import type { TimeOfDayData } from "./time-of-day-chart.js";
 import type { PassesResponse, PassSort, SortDirection, Summary } from "../types.js";
-
-/** How often to re-fetch. Events arrive at walking pace, so anything faster is just noise. */
-const POLL_MS = 15_000;
+import { mode, passesUrl, playback, pollMs, summaryUrl } from "./source.js";
+import { sortPasses } from "../aggregate.js";
 
 /** Rows fetched for the table. Beyond this the browser, not the data, becomes the bottleneck. */
 const TABLE_LIMIT = 500;
@@ -46,7 +45,8 @@ async function getJson<T>(path: string): Promise<T> {
 
 let state: RangeState = { dedupe: true, range: "24h" };
 let sort: { sort: PassSort; direction: SortDirection } = { direction: "desc", sort: "time" };
-let lastLoadedMs = 0;
+/** When the numbers on screen were computed - not when they were fetched. See `tickFreshness`. */
+let generatedAtMs = 0;
 let inFlight = false;
 
 function setFreshness(text: string): void {
@@ -85,14 +85,21 @@ async function load(): Promise<void> {
 
   inFlight = true;
 
-  const query = "range=" + state.range + "&dedupe=" + (state.dedupe ? "1" : "0");
-
   try {
-    const [ summary, passes ] = await Promise.all([
-      getJson<Summary>("/api/summary?" + query),
-      getJson<PassesResponse>("/api/passes?" + query + "&limit=" + TABLE_LIMIT +
-        "&sort=" + sort.sort + "&dir=" + sort.direction)
+    const [ summary, fetched ] = await Promise.all([
+      getJson<Summary>(summaryUrl(state)),
+      getJson<PassesResponse>(passesUrl(state, sort.sort, sort.direction, TABLE_LIMIT))
     ]);
+
+    // A snapshot arrives unsorted and complete, so the ordering is applied here with the same
+    // function the server uses. Sorting the whole range before the page limit is the point: it is
+    // what lets the table honestly call the top row the fastest.
+    const passes = (mode === "live") ? fetched : {
+      ...fetched,
+      direction: sort.direction,
+      passes: sortPasses(fetched.passes, sort.sort, sort.direction).slice(0, TABLE_LIMIT),
+      sort: sort.sort
+    };
 
     panel<"tiles">("stat-tiles").data =
       { speedLimitKph: summary.speedLimitKph, stats: summary.stats };
@@ -113,15 +120,17 @@ async function load(): Promise<void> {
       direction: passes.direction,
       directionLabels: passes.directionLabels,
       passes: passes.passes,
+      playback: playback && passes.playback,
       sort: passes.sort,
       speedLimitKph: passes.speedLimitKph,
+      timeZone: summary.timeZone,
       total: passes.total
     };
 
     renderCoverage(summary);
 
-    lastLoadedMs = Date.now();
-    setFreshness("updated just now");
+    generatedAtMs = summary.generatedAtMs;
+    tickFreshness();
   } catch(error) {
     // A failed poll is usually the server being restarted, so say so and keep polling rather than
     // wiping a page of good data.
@@ -131,16 +140,24 @@ async function load(): Promise<void> {
   }
 }
 
+/**
+ * Say how old the numbers are.
+ *
+ * Measured from when the data was computed, not when it was fetched. On the published site those
+ * are different by up to the refresh interval, and a page that says "updated just now" because it
+ * downloaded a fifteen-minute-old file is telling the reader something untrue about the street.
+ */
 function tickFreshness(): void {
-  if(!lastLoadedMs) {
+  if(!generatedAtMs) {
     return;
   }
 
-  const seconds = Math.round((Date.now() - lastLoadedMs) / 1000);
+  const seconds = Math.round((Date.now() - generatedAtMs) / 1000);
+  const age = seconds < 5 ? "just now"
+    : seconds < 90 ? seconds + "s ago"
+      : Math.round(seconds / 60) + " min ago";
 
-  setFreshness(seconds < 5 ? "updated just now"
-    : seconds < 90 ? "updated " + seconds + "s ago"
-      : "updated " + Math.round(seconds / 60) + " min ago");
+  setFreshness((mode === "live" ? "updated " : "measured up to ") + age);
 }
 
 const controls = document.querySelector("range-controls") as RangeControls | null;
@@ -158,7 +175,7 @@ document.querySelector("passes-table")?.addEventListener("sort-change", (event) 
 });
 
 setInterval(tickFreshness, 1000);
-setInterval(() => void load(), POLL_MS);
+setInterval(() => void load(), pollMs);
 
 // Pick the data back up promptly after the laptop has been shut, rather than waiting out the poll.
 document.addEventListener("visibilitychange", () => {
