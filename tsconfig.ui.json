@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "rootDir": "src/dashboard",
+    "outDir": "dist/dashboard",
+    "types": []
+  },
+  "include": ["src/dashboard/ui/**/*.ts", "src/dashboard/types.ts"],
+  "exclude": ["dist", "node_modules"]
+}

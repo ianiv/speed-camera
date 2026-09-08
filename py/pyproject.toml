@@ -1,0 +1,12 @@
+[project]
+name = "speed-camera-worker"
+version = "0.1.0"
+description = "Vehicle detection and tracking worker for speed-camera."
+# torch and ultralytics wheels lag the newest CPython, so the worker is pinned to a version
+# that reliably has them.
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "ultralytics>=8.3.0",
+  "opencv-python-headless>=4.10",
+  "lap>=0.5.12",
+]

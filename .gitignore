@@ -1,0 +1,11 @@
+node_modules/
+dist/
+data/
+.env
+# Holds this deployment's camera id. config.example.json is the template.
+config.json
+py/.venv/
+py/*.pt
+*.pt
+*.tsbuildinfo
+.DS_Store

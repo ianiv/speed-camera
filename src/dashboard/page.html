@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Speed dashboard</title>
+<link rel="stylesheet" href="/style.css">
+<!-- Inline so the browser stops asking for a favicon.ico the server does not have. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 13A6 6 0 1 1 8 3a6 6 0 0 1 0 10z' fill='none' stroke='%232f6fed' stroke-width='1.6'/%3E%3Cpath d='M8 8l3.2-2.4' stroke='%23d6453d' stroke-width='1.6' stroke-linecap='round'/%3E%3C/svg%3E">
+<!--
+  A shell only. Every number on this page arrives from /api, and every element below is a custom
+  element defined in app.js - there is no inline logic here to drift out of step with it.
+-->
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <h1>Speed dashboard <span>&mdash; measured vehicle speeds</span></h1>
+    <span id="freshness">loading&hellip;</span>
+  </header>
+
+  <p class="nojs">This page needs JavaScript and a browser with support for custom elements.</p>
+
+  <range-controls></range-controls>
+  <stat-tiles></stat-tiles>
+  <speed-histogram></speed-histogram>
+  <time-of-day-chart></time-of-day-chart>
+  <passes-table></passes-table>
+
+  <footer class="coverage"><span id="coverage"></span></footer>
+
+</div>
+</body>
+</html>

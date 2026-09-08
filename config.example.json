@@ -1,0 +1,42 @@
+{
+  "cameraId": "REPLACE_WITH_CAMERA_ID",
+  "protectUrlTemplate": "https://{host}/protect/events/{eventId}",
+  "clip": {
+    "channel": 0,
+    "preRollMs": 2000,
+    "postRollMs": 2000,
+    "maxEventWaitMs": 30000,
+    "eventPollIntervalMs": 1000,
+    "fallbackDurationMs": 8000,
+    "downloadTimeoutMs": 60000
+  },
+  "worker": {
+    "python": "py/.venv/bin/python",
+    "script": "py/worker.py",
+    "model": "yolo11s.pt",
+    "device": "mps",
+    "conf": 0.35,
+    "timeoutMs": 300000,
+    "imgsz": 960
+  },
+  "speed": {
+    "minPoints": 8,
+    "minDurationS": 0.5,
+    "minDistanceM": 3,
+    "minR2": 0.95,
+    "minMedianConf": 0.4,
+    "edgeMarginPx": 4,
+    "extrapolationMarginM": 5,
+    "outlierSigma": 2.5,
+    "minPixelTravel": 25
+  },
+  "speedLimitKph": 30,
+  "dashboard": {
+    "port": 8738,
+    "directionLabels": [
+      "One way",
+      "The other way"
+    ]
+  },
+  "alertKph": null
+}

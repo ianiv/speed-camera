@@ -1,0 +1,36 @@
+{
+  "name": "speed-camera",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Estimate vehicle speeds from UniFi Protect motion events.",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "ufp-speed": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc && tsc -p tsconfig.ui.json && mkdir -p dist/calibrate dist/dashboard/ui && cp src/calibrate/page.html dist/calibrate/ && cp src/dashboard/page.html dist/dashboard/ && cp src/dashboard/ui/style.css dist/dashboard/ui/",
+    "dev": "tsx src/cli.ts",
+    "ufp-speed": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "unifi-protect": "^5.3.1",
+    "zod": "^4.1.11"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.5.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "esbuild@0.28.2": true
+  }
+}

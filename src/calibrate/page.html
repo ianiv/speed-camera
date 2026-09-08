@@ -1,0 +1,818 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Calibrate</title>
+<style>
+  :root { --bg:#14161a; --panel:#1d2027; --line:#2c313b; --text:#e7e9ee; --muted:#9aa3b2;
+          --accent:#5eb0ff; --good:#59d499; --bad:#ff7a7a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  header { padding:12px 18px; border-bottom:1px solid var(--line); display:flex; gap:16px;
+           align-items:center; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; }
+  main { display:flex; gap:18px; padding:18px; align-items:flex-start; flex-wrap:wrap; }
+  #stage { position:relative; flex:1 1 640px; min-width:320px; }
+  canvas { width:100%; display:block; border:1px solid var(--line); border-radius:6px; cursor:crosshair; }
+  aside { flex:0 0 320px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; }
+  h2 { font-size:13px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  .step { border-top:1px solid var(--line); padding-top:14px; margin-top:14px; }
+  .step:first-of-type { border-top:0; padding-top:0; margin-top:0; }
+  label { display:block; margin:8px 0 4px; color:var(--muted); font-size:12px; }
+  input { width:100%; padding:7px 9px; background:#12141a; border:1px solid var(--line);
+          border-radius:5px; color:var(--text); font:inherit; }
+  button { padding:8px 12px; border-radius:6px; border:1px solid var(--line); background:#272c36;
+           color:var(--text); font:inherit; cursor:pointer; }
+  button:hover:not(:disabled) { background:#323847; }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.primary { background:var(--accent); color:#08111c; border-color:var(--accent); font-weight:600; }
+  .row { display:flex; gap:8px; margin-top:12px; }
+  .row button { flex:1; }
+  ol { margin:6px 0 0; padding-left:20px; color:var(--muted); font-size:13px; }
+  ol li { margin-bottom:4px; }
+  .status { margin-top:12px; padding:9px 11px; border-radius:6px; font-size:13px; display:none; }
+  .status.show { display:block; }
+  .status.ok { background:rgba(89,212,153,.13); color:var(--good); }
+  .status.err { background:rgba(255,122,122,.13); color:var(--bad); }
+  .pill { display:inline-block; padding:1px 7px; border-radius:99px; background:#272c36;
+          color:var(--muted); font-size:12px; margin-left:6px; }
+  .hint { color:var(--muted); font-size:12px; margin-top:8px; }
+  code { background:#12141a; padding:1px 5px; border-radius:4px; font-size:12px; }
+  .grid4 { display:grid; grid-template-columns:auto 1fr 1fr; gap:6px 8px; align-items:center; margin:10px 0 4px; }
+  .grid4 .col { color:var(--muted); font-size:11px; text-align:center; }
+  .grid4 .rowlabel { color:var(--muted); font-size:12px; margin:0; white-space:nowrap; }
+  .grid4 input { padding:5px 7px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Road calibration</h1>
+  <span class="pill" id="camera"></span>
+  <span class="pill" id="mode">Step 1 &middot; road quad</span>
+  <span class="pill" id="loaded" hidden></span>
+  <button id="fresh" hidden>Start fresh</button>
+</header>
+
+<main>
+  <div id="stage"><canvas id="canvas"></canvas></div>
+
+  <aside>
+    <div class="step">
+      <h2>1 &middot; Lens correction</h2>
+      <ol>
+        <li>Trace <b>2&ndash;3 lines that are straight in real life</b> but look bent in the photo &mdash;
+        a kerb, a roofline, a fence.</li>
+        <li>Click 4&ndash;8 points along each, then <b>End line</b>.</li>
+        <li>Spread them across the frame; lines near the edges carry the most information.</li>
+        <li>Points can be dragged or nudged with the arrow keys afterwards; the lens re-solves itself.</li>
+      </ol>
+      <p class="hint">A wide lens bows straight lines. Left uncorrected it biases every speed by
+      several percent, differently depending on where in the frame the car was.</p>
+      <div class="row">
+        <button id="lensMode">Trace a line</button>
+        <button id="lensEnd">End line</button>
+      </div>
+      <div class="row">
+        <button id="lensSolve">Solve lens</button>
+        <button id="lensClear">Clear</button>
+      </div>
+      <div class="status" id="lensStatus"></div>
+    </div>
+
+    <div class="step">
+      <h2>2 &middot; Road quad</h2>
+      <ol>
+        <li>Click <b>4 points on the road surface</b>, going around the shape &mdash; not diagonally.</li>
+        <li>Order: near-left, near-right, far-right, far-left.</li>
+        <li>Pick things you can measure: lane-line ends, driveway corners, a hydrant, a pole base.</li>
+      </ol>
+      <p class="hint"><b>Keep clicking the photo exactly as it looks</b>, bends and all. The picture
+      is never straightened on screen &mdash; the lens correction from step 1 is applied to your
+      clicks automatically. There is no corrected image to click on.</p>
+      <p class="hint">Click points at road level, where tyres touch. A point on a kerb top or a wall
+      is above the road plane and will bias every speed.</p>
+      <p class="hint"><b>Drag any point to move it.</b> Click one to select, then use the arrow keys
+      to nudge it a pixel at a time (hold Shift for 10), Delete to remove it, Esc to deselect. A
+      magnifier follows the cursor &mdash; the frame is 4K shown small, so one screen pixel is
+      several image pixels and dragging by eye alone is not precise enough.</p>
+      <div class="row">
+        <button id="undo">Undo point</button>
+        <button id="reset">Reset</button>
+      </div>
+    </div>
+
+    <div class="step">
+      <h2>3 &middot; Real-world size</h2>
+      <p class="hint">Where each clicked point sits on the ground, in metres. <b>X</b> across the
+      street, <b>Y</b> along it. The origin can be anywhere &mdash; only the distances between the
+      points matter. They need <b>not</b> form a rectangle.</p>
+      <div class="grid4">
+        <span></span><span class="col">X (m)</span><span class="col">Y (m)</span>
+        <label class="rowlabel">near-left</label>
+        <input id="gx0" type="number" step="0.01" value="0">
+        <input id="gy0" type="number" step="0.01" value="0">
+        <label class="rowlabel">near-right</label>
+        <input id="gx1" type="number" step="0.01" value="10">
+        <input id="gy1" type="number" step="0.01" value="0">
+        <label class="rowlabel">far-right</label>
+        <input id="gx2" type="number" step="0.01" value="10">
+        <input id="gy2" type="number" step="0.01" value="20">
+        <label class="rowlabel">far-left</label>
+        <input id="gx3" type="number" step="0.01" value="0">
+        <input id="gy3" type="number" step="0.01" value="20">
+      </div>
+
+      <label>Rectangle shortcut &mdash; width across &times; length along</label>
+      <div class="row">
+        <input id="width" type="number" step="0.1" min="0.1" value="10">
+        <input id="length" type="number" step="0.1" min="0.1" value="20">
+        <button id="fillRect">Fill</button>
+      </div>
+      <p class="hint">Use the shortcut only if the four points really are a rectangle on the road
+      &mdash; two points square across the near kerb and two square across the far one, the same
+      distance apart on both sides. Where the kerb curves, measure each point instead.</p>
+      <div class="status" id="groundStatus"></div>
+    </div>
+
+    <div class="step">
+      <h2>4 &middot; Road area</h2>
+      <p class="hint">Click the outline of the drivable road, then close it. Tracks straying outside
+      are rejected. Leave empty to use the whole frame.</p>
+      <div class="row">
+        <button id="roiMode">Draw road area</button>
+        <button id="roiClear">Clear</button>
+      </div>
+    </div>
+
+    <div class="step">
+      <h2>5 &middot; Check &amp; save</h2>
+      <p class="hint">The green grid is 1&nbsp;m squares projected onto the road, bent back through
+      the lens. It should lie flat along the road and stay square-ish, and its lines should follow
+      the same curve the kerb does. If it fans out or skews, a point is misplaced.</p>
+      <div class="row">
+        <button id="grid">Toggle grid</button>
+        <button class="primary" id="save" disabled>Save</button>
+      </div>
+      <div class="status" id="status"></div>
+    </div>
+  </aside>
+</main>
+
+<script>
+const CAMERA_ID = window.__CAMERA_ID__;
+const EXISTING = window.__EXISTING__;
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+const image = new Image();
+
+let points = [];
+let roi = [];
+let roiMode = false;
+let showGrid = true;
+let lens = null;                 // {k1,k2,cx,cy,s} once solved
+let lensLines = [];              // completed traces
+let currentLine = [];            // trace in progress
+let lensMode = false;
+let lensReport = null;
+let selected = null;             // the handle being adjusted
+let dragging = false;
+let hover = null;                // cursor position, for the loupe
+let pressAt = null;
+let movedWhilePressed = false;
+
+document.getElementById("camera").textContent = CAMERA_ID;
+
+image.onload = () => {
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  if(EXISTING) restore(EXISTING);
+  draw();
+};
+
+/**
+ * Re-populate the page from a saved calibration.
+ *
+ * Points are stored in the pixels of whatever frame they were clicked on, so they are rescaled to
+ * the frame in front of us now - a calibration made on a different channel would otherwise land
+ * everything in the wrong place while looking perfectly deliberate. The lens coefficients need no
+ * rescaling: they are defined on coordinates normalised by half the frame width, which makes them
+ * the same numbers at any resolution.
+ */
+function restore(c) {
+  const sx = canvas.width / c.imageWidth, sy = canvas.height / c.imageHeight;
+  const scale = p => [p[0] * sx, p[1] * sy];
+
+  points = (c.imagePoints || []).map(scale);
+  roi = (c.roi || []).map(scale);
+  lensLines = (c.lensLines || []).map(line => line.map(scale));
+  if(c.lens) lens = Object.assign(lensDefaults(), { k1: c.lens.k1, k2: c.lens.k2 });
+  (c.groundPoints || []).forEach((p, i) => {
+    document.getElementById("gx" + i).value = p[0];
+    document.getElementById("gy" + i).value = p[1];
+  });
+
+  const badge = document.getElementById("loaded");
+  const when = c.createdAt ? new Date(c.createdAt).toLocaleString() : "earlier";
+  badge.textContent = "Loaded calibration from " + when;
+  badge.hidden = false;
+  document.getElementById("fresh").hidden = false;
+
+  if(sx !== 1 || sy !== 1) {
+    lensStatus("ok", "Rescaled from " + c.imageWidth + "\u00d7" + c.imageHeight + " to " +
+      canvas.width + "\u00d7" + canvas.height + ".");
+  }
+
+  // The radial model assumes square-ish pixels about a common centre. A changed aspect ratio breaks
+  // that, and the old coefficients would be quietly wrong rather than obviously so.
+  const aspectBefore = c.imageWidth / c.imageHeight, aspectNow = canvas.width / canvas.height;
+  if(c.lens && Math.abs(aspectBefore - aspectNow) > 0.01) {
+    lensStatus("err", "The frame's aspect ratio has changed since this lens was solved. " +
+      "Re-trace and solve it again.");
+  }
+}
+image.src = "/snapshot.jpg";
+
+/* --- lens: mirrors src/lens.ts, so what you see here is what the measurement will do --- */
+function lensDefaults() { return { k1: 0, k2: 0, cx: canvas.width / 2, cy: canvas.height / 2, s: canvas.width / 2 }; }
+
+function undistort(p, l) {
+  l = l || lens;
+  if(!l || (!l.k1 && !l.k2)) return p;
+  const x = (p[0] - l.cx) / l.s, y = (p[1] - l.cy) / l.s;
+  const r2 = x * x + y * y, f = 1 + l.k1 * r2 + l.k2 * r2 * r2;
+  return [l.cx + x * f * l.s, l.cy + y * f * l.s];
+}
+
+function distort(p, l) {
+  l = l || lens;
+  if(!l || (!l.k1 && !l.k2)) return p;
+  const x = (p[0] - l.cx) / l.s, y = (p[1] - l.cy) / l.s;
+  const target = Math.hypot(x, y);
+  if(target < 1e-12) return p;
+  let r = target;
+  for(let i = 0; i < 20; i++) {
+    const r2 = r * r;
+    const v = r * (1 + l.k1 * r2 + l.k2 * r2 * r2) - target;
+    const d = 1 + 3 * l.k1 * r2 + 5 * l.k2 * r2 * r2;
+    if(Math.abs(d) < 1e-12) break;
+    const step = v / d; r -= step;
+    if(Math.abs(step) < 1e-12) break;
+  }
+  const k = r / target;
+  return [l.cx + x * k * l.s, l.cy + y * k * l.s];
+}
+
+/** Spread across a line over spread along it: scale-free, so a shrinking "solution" gains nothing. */
+function straightness(pts) {
+  const n = pts.length;
+  if(n < 3) return 0;
+  const mx = pts.reduce((a, p) => a + p[0], 0) / n, my = pts.reduce((a, p) => a + p[1], 0) / n;
+  let sxx = 0, syy = 0, sxy = 0;
+  for(const p of pts) { const dx = p[0] - mx, dy = p[1] - my; sxx += dx * dx; syy += dy * dy; sxy += dx * dy; }
+  sxx /= n; syy /= n; sxy /= n;
+  const tr = sxx + syy, det = sxx * syy - sxy * sxy;
+  const gap = Math.sqrt(Math.max(0, tr * tr - 4 * det));
+  const major = (tr + gap) / 2, minor = (tr - gap) / 2;
+  return major <= 1e-12 ? 0 : Math.max(0, minor) / major;
+}
+
+function solveLensFrom(lines) {
+  const usable = lines.filter(l => l.length >= 3);
+  if(!usable.length) return null;
+  const base = lensDefaults();
+  const cost = (k1, k2) => usable.reduce((t, line) =>
+    t + straightness(line.map(p => undistort(p, { ...base, k1, k2 }))), 0) / usable.length;
+  let best = { c: cost(0, 0), k1: 0, k2: 0 };
+  let range = { k1: [-0.6, 0.6], k2: [-0.3, 0.3] }, steps = 60;
+  for(let pass = 0; pass < 4; pass++) {
+    const s1 = (range.k1[1] - range.k1[0]) / steps, s2 = (range.k2[1] - range.k2[0]) / steps;
+    for(let i = 0; i <= steps; i++) for(let j = 0; j <= steps; j++) {
+      const k1 = range.k1[0] + i * s1, k2 = range.k2[0] + j * s2, c = cost(k1, k2);
+      if(c < best.c) best = { c, k1, k2 };
+    }
+    range = { k1: [best.k1 - s1, best.k1 + s1], k2: [best.k2 - s2, best.k2 + s2] }; steps = 20;
+  }
+  return { lens: { ...base, k1: best.k1, k2: best.k2 }, before: cost(0, 0), after: best.c };
+}
+
+/* --- geometry: mirrors src/homography.ts so the preview is the real projection, not an approximation --- */
+function solveHomography(src, dst) {
+  const a = [];
+  for(let i = 0; i < 4; i++) {
+    const [x, y] = src[i], [u, v] = dst[i];
+    a.push([x, y, 1, 0, 0, 0, -u * x, -u * y, u]);
+    a.push([0, 0, 0, x, y, 1, -v * x, -v * y, v]);
+  }
+  const n = 8, m = a.map(r => r.slice());
+  for(let col = 0; col < n; col++) {
+    let p = col;
+    for(let r = col + 1; r < n; r++) if(Math.abs(m[r][col]) > Math.abs(m[p][col])) p = r;
+    if(Math.abs(m[p][col]) < 1e-12) return null;
+    [m[col], m[p]] = [m[p], m[col]];
+    for(let r = 0; r < n; r++) {
+      if(r === col) continue;
+      const f = m[r][col] / m[col][col];
+      if(!f) continue;
+      for(let c = col; c <= n; c++) m[r][c] -= f * m[col][c];
+    }
+  }
+  const h = m.map((row, i) => row[n] / row[i]);
+  return [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1];
+}
+
+function invert(h) {
+  const [a, b, c, d, e, f, g, i, j] = h;
+  const c00 = e * j - f * i, c01 = f * g - d * j, c02 = d * i - e * g;
+  const det = a * c00 + b * c01 + c * c02;
+  if(Math.abs(det) < 1e-12) return null;
+  const adj = [c00, c * i - b * j, b * f - c * e, c01, a * j - c * g, c * d - a * f,
+               c02, b * g - a * i, a * e - b * d];
+  return adj.map(v => v / adj[8]);
+}
+
+function apply(h, [x, y]) {
+  const w = h[6] * x + h[7] * y + h[8];
+  if(Math.abs(w) < 1e-12) return null;
+  return [(h[0] * x + h[1] * y + h[2]) / w, (h[3] * x + h[4] * y + h[5]) / w];
+}
+
+function isConvex(q) {
+  if(q.length !== 4) return false;
+  let sign = 0;
+  for(let i = 0; i < 4; i++) {
+    const a = q[i], b = q[(i + 1) % 4], c = q[(i + 2) % 4];
+    const cr = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+    if(cr) { if(!sign) sign = Math.sign(cr); else if(Math.sign(cr) !== sign) return false; }
+  }
+  return sign !== 0;
+}
+
+/**
+ * Ground coordinates for the four clicked points, in metres.
+ *
+ * Read per-point rather than derived from a width and a length: a homography only needs four known
+ * points, and insisting they form a rectangle would force a shape onto roads that do not have one.
+ * A kerb that curves, or a corner, cannot give you a true rectangle - and quietly pretending it did
+ * would bend every measurement by however wrong the assumption was.
+ */
+function groundPoints() {
+  const pts = [];
+  for(let i = 0; i < 4; i++) {
+    const x = parseFloat(document.getElementById("gx" + i).value);
+    const y = parseFloat(document.getElementById("gy" + i).value);
+    if(!isFinite(x) || !isFinite(y)) return null;
+    pts.push([x, y]);
+  }
+  // Listed in the order the points were clicked, so a self-crossing set means the ground figures
+  // contradict the picture - which produces a homography that looks solved and is nonsense.
+  return isConvex(pts) ? pts : null;
+}
+
+/* --- rendering --- */
+function draw() {
+  ctx.drawImage(image, 0, 0);
+  const s = Math.max(1, canvas.width / 900);
+
+  if(showGrid && points.length === 4) drawGrid(s);
+
+  drawLensLines(s);
+
+  if(roi.length > 1) {
+    ctx.beginPath();
+    roi.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+    ctx.closePath();
+    ctx.fillStyle = "rgba(94,176,255,.12)";
+    ctx.strokeStyle = "#5eb0ff";
+    ctx.lineWidth = 2 * s;
+    ctx.fill(); ctx.stroke();
+  }
+
+  roi.forEach((p, i) => {
+    const on = sameHandle(selected, { index: i, kind: "roi" });
+    ctx.beginPath(); ctx.arc(p[0], p[1], (on ? 6 : 4) * s, 0, Math.PI * 2);
+    ctx.fillStyle = on ? "#5eb0ff" : "rgba(94,176,255,.85)";
+    ctx.fill();
+    ctx.strokeStyle = "#14161a"; ctx.lineWidth = 1.5 * s; ctx.stroke();
+  });
+
+  if(points.length > 1) {
+    ctx.beginPath();
+    points.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+    if(points.length === 4) ctx.closePath();
+    ctx.strokeStyle = points.length === 4 && !isConvex(points) ? "#ff7a7a" : "#ffd166";
+    ctx.lineWidth = 2.5 * s;
+    ctx.stroke();
+  }
+
+  const labels = ["near-left", "near-right", "far-right", "far-left"];
+  points.forEach((p, i) => {
+    if(sameHandle(selected, { index: i, kind: "quad" })) {
+      ctx.beginPath(); ctx.arc(p[0], p[1], 12 * s, 0, Math.PI * 2);
+      ctx.strokeStyle = "#5eb0ff"; ctx.lineWidth = 2.5 * s; ctx.stroke();
+    }
+    ctx.beginPath(); ctx.arc(p[0], p[1], 6 * s, 0, Math.PI * 2);
+    ctx.fillStyle = "#ffd166"; ctx.fill();
+    ctx.strokeStyle = "#14161a"; ctx.lineWidth = 2 * s; ctx.stroke();
+    ctx.fillStyle = "#fff"; ctx.font = (13 * s) + "px -apple-system,sans-serif";
+    ctx.strokeText(labels[i], p[0] + 10 * s, p[1] - 8 * s);
+    ctx.fillText(labels[i], p[0] + 10 * s, p[1] - 8 * s);
+  });
+
+  if(hover) drawLoupe(hover);
+
+  updateState();
+}
+
+/** Warp a 1 m ground grid back into the image. This is the calibration's own error check. */
+function drawGrid(s) {
+  const ground = groundPoints();
+  if(!ground || !isConvex(points)) return;
+  const h = solveHomography(points, ground);
+  if(!h) return;
+  const inv = invert(h);
+  if(!inv) return;
+
+  const [w, l] = [ground[1][0], ground[2][1]];
+  ctx.strokeStyle = "rgba(89,212,153,.55)";
+  ctx.lineWidth = 1 * s;
+
+  // Ground -> undistorted image -> the bent image the user is looking at. Segmented, because a
+  // straight ground line is a curve once the lens is put back.
+  const line = (a, b) => {
+    ctx.beginPath();
+    for(let i = 0; i <= 24; i++) {
+      const t = i / 24;
+      const g = apply(inv, [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+      if(!g) return;
+      const s = distort(g);
+      i ? ctx.lineTo(s[0], s[1]) : ctx.moveTo(s[0], s[1]);
+    }
+    ctx.stroke();
+  };
+
+  for(let x = 0; x <= w + 1e-9; x += 1) line([x, 0], [x, l]);
+  for(let y = 0; y <= l + 1e-9; y += 1) line([0, y], [w, y]);
+}
+
+function drawLensLines(s) {
+  const all = currentLine.length ? lensLines.concat([currentLine]) : lensLines;
+
+  for(const line of all) {
+    ctx.globalAlpha = lensMode ? 1 : 0.35;
+
+    if(line.length > 1) {
+      ctx.beginPath();
+      line.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+      ctx.strokeStyle = "rgba(255,122,122,.95)";
+      ctx.lineWidth = 2 * s;
+      ctx.stroke();
+    }
+    const kind = (line === currentLine) ? "current" : "lens";
+    const which = (kind === "lens") ? lensLines.indexOf(line) : undefined;
+
+    line.forEach((p, i) => {
+      const on = sameHandle(selected, { index: i, kind, line: which });
+      ctx.beginPath(); ctx.arc(p[0], p[1], (on ? 7 : 4) * s, 0, Math.PI * 2);
+      ctx.fillStyle = on ? "#5eb0ff" : "#ff7a7a"; ctx.fill();
+      if(on) { ctx.strokeStyle = "#14161a"; ctx.lineWidth = 2 * s; ctx.stroke(); }
+    });
+    ctx.globalAlpha = 1;
+
+    // Once solved, show the same trace corrected. It should lie on the dashed chord between its
+    // own endpoints - that is the whole proof that the lens model is right.
+    if(lens && line.length > 2) {
+      // Dimmed outside the lens step: it is evidence the solve worked, not a surface to click on.
+      ctx.globalAlpha = lensMode ? 1 : 0.25;
+      const fixed = line.map(p => undistort(p));
+      ctx.beginPath();
+      fixed.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+      ctx.strokeStyle = "rgba(89,212,153,.95)";
+      ctx.lineWidth = 2 * s;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.setLineDash([8 * s, 6 * s]);
+      ctx.moveTo(fixed[0][0], fixed[0][1]);
+      ctx.lineTo(fixed[fixed.length - 1][0], fixed[fixed.length - 1][1]);
+      ctx.strokeStyle = "rgba(255,255,255,.75)";
+      ctx.lineWidth = 1.5 * s;
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
+function updateState() {
+  const ok = points.length === 4 && isConvex(points.map(p => undistort(p))) && groundPoints();
+  document.getElementById("save").disabled = !ok;
+  document.getElementById("mode").textContent = roiMode
+    ? "Drawing road area · " + roi.length + " points"
+    : "Step 1 · road quad · " + points.length + "/4";
+
+  if(points.length === 4 && !isConvex(points.map(p => undistort(p)))) {
+    show("err", "Those 4 points cross over each other. Click them around the shape, not diagonally.");
+  } else if(points.length === 4 && !groundPoints()) {
+    show("err", "The ground coordinates are missing or cross over each other. They must go round the " +
+      "quad in the same order the points were clicked: near-left, near-right, far-right, far-left.");
+  }
+}
+
+function show(kind, message) {
+  const el = document.getElementById("status");
+  el.className = "status show " + kind;
+  el.textContent = message;
+}
+
+/* --- placing and adjusting points ---------------------------------------------------------------
+ * The frame is 4K but displays a few hundred pixels wide, so one screen pixel covers roughly four
+ * image pixels. Clicking alone therefore cannot place a point as precisely as the image allows, and
+ * every pixel of calibration error becomes measurement error. Hence three things: drag to correct a
+ * point after the fact, arrow keys to nudge it by exact pixels, and a loupe so you can see what you
+ * are aiming at.
+ */
+
+function toCanvas(event) {
+  const r = canvas.getBoundingClientRect();
+  return [(event.clientX - r.left) * (canvas.width / r.width),
+          (event.clientY - r.top) * (canvas.height / r.height)];
+}
+
+/** Screen-to-image scale: how many image pixels one screen pixel covers. */
+function screenScale() {
+  const r = canvas.getBoundingClientRect();
+  return r.width ? canvas.width / r.width : 1;
+}
+
+function grabRadius() { return 14 * screenScale(); }
+
+/** Every draggable point, as {kind, line, index}. */
+function eachHandle(fn) {
+  points.forEach((p, i) => fn({ kind: "quad", index: i }, p));
+  roi.forEach((p, i) => fn({ kind: "roi", index: i }, p));
+  lensLines.forEach((line, li) => line.forEach((p, i) => fn({ kind: "lens", line: li, index: i }, p)));
+  currentLine.forEach((p, i) => fn({ kind: "current", index: i }, p));
+}
+
+function sameHandle(a, b) {
+  return a && b && a.kind === b.kind && a.index === b.index && a.line === b.line;
+}
+
+function handleAt(p) {
+  let best = null, bestDistance = grabRadius();
+  eachHandle((handle, point) => {
+    const d = Math.hypot(point[0] - p[0], point[1] - p[1]);
+    if(d <= bestDistance) { bestDistance = d; best = handle; }
+  });
+  return best;
+}
+
+function handleList(handle) {
+  if(handle.kind === "quad") return points;
+  if(handle.kind === "roi") return roi;
+  if(handle.kind === "current") return currentLine;
+  return lensLines[handle.line];
+}
+
+function readHandle(handle) { return handleList(handle)[handle.index]; }
+function writeHandle(handle, p) { handleList(handle)[handle.index] = p; }
+
+function removeHandle(handle) {
+  const list = handleList(handle);
+  list.splice(handle.index, 1);
+  // A trace that has lost too many points can no longer say anything about curvature.
+  if(handle.kind === "lens" && list.length < 3) lensLines.splice(handle.line, 1);
+}
+
+/** Re-solve the lens after a traced point moves, so the correction tracks the correction you just made. */
+function resolveLensIfSolved() {
+  if(!lens || !lensLines.length) return;
+  const solved = solveLensFrom(lensLines);
+  if(solved) {
+    lens = solved.lens;
+    lensReport = solved;
+    const drop = solved.before > 0 ? (1 - solved.after / solved.before) * 100 : 0;
+    lensStatus(drop > 50 ? "ok" : "err", "Re-solved: k1=" + solved.lens.k1.toFixed(4) +
+      "  k2=" + solved.lens.k2.toFixed(4) + "  \u2014 curvature reduced " + drop.toFixed(0) + "%.");
+  }
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  const p = toCanvas(e);
+  const hit = handleAt(p);
+  pressAt = p;
+  movedWhilePressed = false;
+  if(hit) {
+    selected = hit;
+    dragging = true;
+    canvas.setPointerCapture(e.pointerId);
+  }
+  draw();
+});
+
+canvas.addEventListener("pointermove", (e) => {
+  const p = toCanvas(e);
+  hover = p;
+  if(dragging && selected) {
+    writeHandle(selected, p);
+    movedWhilePressed = true;
+  } else {
+    canvas.style.cursor = handleAt(p) ? "grab" : "crosshair";
+  }
+  draw();
+});
+
+canvas.addEventListener("pointerup", (e) => {
+  const p = toCanvas(e);
+  if(dragging) {
+    dragging = false;
+    canvas.style.cursor = "grab";
+    if(movedWhilePressed && (selected.kind === "lens" || selected.kind === "current")) resolveLensIfSolved();
+  } else if(pressAt && Math.hypot(p[0] - pressAt[0], p[1] - pressAt[1]) < grabRadius()) {
+    // A press that neither grabbed a handle nor travelled is a click: add a point.
+    if(lensMode) currentLine.push(p);
+    else if(roiMode) roi.push(p);
+    else if(points.length < 4) points.push(p);
+    selected = null;
+  }
+  pressAt = null;
+  draw();
+});
+
+canvas.addEventListener("pointerleave", () => { hover = null; draw(); });
+
+window.addEventListener("keydown", (e) => {
+  // Never steal keys from the width/length fields.
+  const tag = document.activeElement && document.activeElement.tagName;
+  if(tag === "INPUT" || tag === "TEXTAREA") return;
+  if(!selected) return;
+
+  const nudge = { ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1] }[e.key];
+
+  if(nudge) {
+    e.preventDefault();
+    const step = e.shiftKey ? 10 : 1;
+    const p = readHandle(selected);
+    writeHandle(selected, [p[0] + nudge[0] * step, p[1] + nudge[1] * step]);
+    if(selected.kind === "lens" || selected.kind === "current") resolveLensIfSolved();
+    draw();
+  } else if(e.key === "Delete" || e.key === "Backspace") {
+    e.preventDefault();
+    removeHandle(selected);
+    selected = null;
+    draw();
+  } else if(e.key === "Escape") {
+    selected = null;
+    draw();
+  }
+});
+
+/** A magnified view of the image under the cursor, so a point can be placed on what you mean. */
+function drawLoupe(p) {
+  const scale = screenScale();
+  const radius = 78 * scale;              // ~78 screen px
+  const source = 26 * scale;              // ~3x magnification on screen
+  // Sit the loupe clear of the cursor, and flip it when it would fall off an edge.
+  let cx = p[0] + radius + (30 * scale);
+  let cy = p[1] - radius - (30 * scale);
+  if(cx + radius > canvas.width) cx = p[0] - radius - (30 * scale);
+  if(cy - radius < 0) cy = p[1] + radius + (30 * scale);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.clip();
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(image, p[0] - source, p[1] - source, source * 2, source * 2,
+                cx - radius, cy - radius, radius * 2, radius * 2);
+  ctx.restore();
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(255,255,255,.85)";
+  ctx.lineWidth = 2 * scale;
+  ctx.stroke();
+
+  const tick = 12 * scale;
+  ctx.beginPath();
+  ctx.moveTo(cx - tick, cy); ctx.lineTo(cx + tick, cy);
+  ctx.moveTo(cx, cy - tick); ctx.lineTo(cx, cy + tick);
+  ctx.strokeStyle = "rgba(255,80,80,.95)";
+  ctx.lineWidth = 1.5 * scale;
+  ctx.stroke();
+}
+
+document.getElementById("undo").onclick = () => {
+  (lensMode ? currentLine : roiMode ? roi : points).pop(); draw();
+};
+document.getElementById("reset").onclick = () => { points = []; roi = []; roiMode = false; selected = null; draw(); };
+
+document.getElementById("fresh").onclick = () => {
+  points = []; roi = []; lensLines = []; currentLine = []; lens = null; lensReport = null;
+  roiMode = false; lensMode = false; selected = null;
+  document.getElementById("lensMode").textContent = "Trace a line";
+  document.getElementById("roiMode").textContent = "Draw road area";
+  document.getElementById("loaded").hidden = true;
+  document.getElementById("fresh").hidden = true;
+  for(const el of document.querySelectorAll(".status")) el.className = "status";
+  draw();
+};
+document.getElementById("roiClear").onclick = () => { roi = []; draw(); };
+document.getElementById("grid").onclick = () => { showGrid = !showGrid; draw(); };
+document.getElementById("roiMode").onclick = (e) => {
+  roiMode = !roiMode;
+  e.target.textContent = roiMode ? "Done drawing" : "Draw road area";
+  draw();
+};
+function lensStatus(kind, message) {
+  const el = document.getElementById("lensStatus");
+  el.className = "status show " + kind;
+  el.textContent = message;
+}
+
+document.getElementById("lensMode").onclick = (e) => {
+  lensMode = !lensMode;
+  if(lensMode) roiMode = false;
+  e.target.textContent = lensMode ? "Stop tracing" : "Trace a line";
+  draw();
+};
+
+document.getElementById("lensEnd").onclick = () => {
+  if(currentLine.length >= 3) { lensLines.push(currentLine); currentLine = []; }
+  else lensStatus("err", "A line needs at least 3 points to say anything about curvature.");
+  draw();
+};
+
+document.getElementById("lensClear").onclick = () => {
+  lensLines = []; currentLine = []; lens = null; lensReport = null;
+  document.getElementById("lensStatus").className = "status";
+  draw();
+};
+
+document.getElementById("lensSolve").onclick = () => {
+  if(currentLine.length >= 3) { lensLines.push(currentLine); currentLine = []; }
+  const solved = solveLensFrom(lensLines);
+  if(!solved) { lensStatus("err", "Trace at least one line of 3+ points first."); return; }
+  lens = solved.lens; lensReport = solved;
+  const drop = solved.before > 0 ? (1 - solved.after / solved.before) * 100 : 0;
+  lensStatus(drop > 50 ? "ok" : "err",
+    "k1=" + solved.lens.k1.toFixed(4) + "  k2=" + solved.lens.k2.toFixed(4) +
+    "  \u2014 curvature reduced " + drop.toFixed(0) + "%." +
+    (drop > 50 ? "  Green traces should now sit on the dashed lines. Carry on clicking the photo as"
+               + " it looks \u2014 the correction is applied for you."
+               : "  That is a weak fit \u2014 trace longer lines, further apart."));
+  draw();
+};
+
+document.getElementById("fillRect").onclick = () => {
+  const w = parseFloat(document.getElementById("width").value);
+  const l = parseFloat(document.getElementById("length").value);
+  if(!(w > 0) || !(l > 0)) { groundStatus("err", "Give a positive width and length first."); return; }
+  const rect = [[0, 0], [w, 0], [w, l], [0, l]];
+  rect.forEach((p, i) => {
+    document.getElementById("gx" + i).value = p[0];
+    document.getElementById("gy" + i).value = p[1];
+  });
+  groundStatus("ok", "Filled a " + w + " m \u00d7 " + l + " m rectangle. Edit any point that is not square.");
+  draw();
+};
+
+function groundStatus(kind, message) {
+  const el = document.getElementById("groundStatus");
+  el.className = "status show " + kind;
+  el.textContent = message;
+}
+
+for(const id of ["width", "length", "gx0", "gy0", "gx1", "gy1", "gx2", "gy2", "gx3", "gy3"]) {
+  document.getElementById(id).oninput = draw;
+}
+
+document.getElementById("save").onclick = async () => {
+  const body = {
+    cameraId: CAMERA_ID,
+    createdAt: new Date().toISOString(),
+    imageWidth: canvas.width,
+    imageHeight: canvas.height,
+    imagePoints: points.map(p => [Math.round(p[0] * 100) / 100, Math.round(p[1] * 100) / 100]),
+    groundPoints: groundPoints(),
+    roi: roi.length >= 3 ? roi.map(p => [Math.round(p[0]), Math.round(p[1])])
+                         : [[0, 0], [canvas.width, 0], [canvas.width, canvas.height], [0, canvas.height]],
+    ...(lens ? { lens, lensLines: lensLines.map(l => l.map(p => [Math.round(p[0] * 100) / 100,
+                                                                Math.round(p[1] * 100) / 100])) } : {})
+  };
+
+  try {
+    const res = await fetch("/save", { method: "POST", headers: { "content-type": "application/json" },
+                                       body: JSON.stringify(body) });
+    const json = await res.json();
+    if(!res.ok) throw new Error(json.error || res.statusText);
+    show("ok", "Saved. You can close this tab and run `ufp-speed backfill` or `ufp-speed daemon`.");
+  } catch(error) {
+    show("err", "Save failed: " + error.message);
+  }
+};
+</script>
+</body>
+</html>
